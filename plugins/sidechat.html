@@ -1,0 +1,431 @@
+<link rel="stylesheet" href="resources/@marcus-j-davies/node-red-sidechat/styles.css" />
+<script src="resources/@marcus-j-davies/node-red-sidechat/emojis.js"></script>
+
+<script type="text/javascript">
+	RED.plugins.registerPlugin('sidechat-plugin', {});
+
+	(function () {
+		const API = 'sidechat/messages';
+		const NODE_TOKEN = /\[\[nodes?:([A-Za-z0-9._,-]+)\]\]/g;
+		const RECENT_KEY = 'md-sidechat-recent-emojis';
+		const MAX_RECENT = 24;
+
+		let me;
+		let list, input, sendBtn, content, status;
+
+		const esc = (s) =>
+			$('<div>')
+				.text(s ?? '')
+				.html();
+		const errText = (xhr) => xhr.responseJSON?.error || xhr.statusText || 'Request failed';
+		const findNodes = (ids) => ids.map((id) => RED.nodes.node(id) || RED.nodes.group?.(id)).filter(Boolean);
+		const isAtBottom = () => list[0].scrollHeight - list[0].scrollTop - list[0].clientHeight < 40;
+		const scrollToBottom = () => list.scrollTop(list[0].scrollHeight);
+
+		function api(type, url = API, data) {
+			return $.ajax({
+				url,
+				type,
+				dataType: 'json',
+				contentType: 'application/json',
+				data: data && JSON.stringify(data)
+			}).fail((xhr) => RED.notify(`Side Chat: ${errText(xhr)}`, 'error'));
+		}
+
+		function formatText(text) {
+			return esc(text)
+				.replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>')
+				.replace(NODE_TOKEN, (all, ids) => `<a href="#" class="md-sidechat-node" data-ids="${ids}"></a>`)
+				.replace(/\n/g, '<br>');
+		}
+
+		function fmtTime(ts) {
+			const d = new Date(ts);
+			const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+			if (d.toDateString() === new Date().toDateString()) {
+				return time;
+			}
+			return `${d.toLocaleDateString([], { day: 'numeric', month: 'short' })} ${time}`;
+		}
+
+		function colourFor(name) {
+			let h = 0;
+			for (let i = 0; i < name.length; i++) {
+				h = (h * 31 + name.charCodeAt(i)) % 360;
+			}
+			return `hsl(${h},55%,45%)`;
+		}
+
+		function mentionsMe(text) {
+			if (!me) {
+				return false;
+			}
+			const name = me.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+			return new RegExp(`(^|[^\\w@])@${name}(?![\\w.-])`, 'i').test(text);
+		}
+
+		function insertText(text, pad = false) {
+			const el = input[0];
+			const before = el.value.slice(0, el.selectionStart);
+			const after = el.value.slice(el.selectionEnd);
+			if (pad) {
+				text = `${before && !/\s$/.test(before) ? ' ' : ''}${text}${/^\s/.test(after) ? '' : ' '}`;
+			}
+			el.value = `${before}${text}${after}`;
+			el.selectionStart = el.selectionEnd = before.length + text.length;
+			input.trigger('focus');
+		}
+
+		function nodeLabel(n) {
+			if (n.type === 'group') {
+				return n.name || 'group';
+			}
+			try {
+				return RED.utils.getNodeLabel(n, n.type) || n.type;
+			} catch (e) {
+				return n.name || n.type;
+			}
+		}
+
+		function flowLabel(z) {
+			const ws = RED.nodes.workspace(z);
+			if (ws) {
+				return ws.label || 'Flow';
+			}
+			const sf = RED.nodes.subflow(z);
+			return sf ? `Subflow: ${sf.name || sf.id}` : '';
+		}
+
+		function refreshNodeLinks(scope = list) {
+			scope.find('a.md-sidechat-node').each(function () {
+				const link = $(this).empty().removeClass('missing').append('<i class="fa fa-crosshairs"></i>');
+				const ids = String(link.attr('data-ids')).split(',');
+				const found = findNodes(ids);
+				if (!found.length) {
+					link.addClass('missing').append(' node no longer exists').attr('title', ids.join(', '));
+					return;
+				}
+				const more = found.length > 1 ? ` +${found.length - 1} more` : '';
+				const flow = flowLabel(found[0].z);
+				link.append(document.createTextNode(` ${nodeLabel(found[0])}${more}`));
+				if (flow) {
+					link.append($('<span class="md-sidechat-node-flow">').text(` (${flow})`));
+				}
+				link.attr('title', `Go to ${found.map((n) => n.type).join(', ')}${flow ? ` in ${flow}` : ''}`);
+			});
+		}
+
+		function goToNodes(ids) {
+			const nodes = findNodes(ids);
+			if (!nodes.length) {
+				RED.notify('That node no longer exists (it may have been deleted or not deployed).', 'warning');
+				return;
+			}
+			const z = nodes[0].z;
+			RED.view.reveal(nodes[0].id);
+			setTimeout(() => RED.view.select({ nodes: nodes.filter((n) => n.z === z) }), 50);
+		}
+
+		function linkSelection() {
+			const ids = (RED.view.selection().nodes || []).map((n) => n.id);
+			if (!ids.length) {
+				RED.notify('Select one or more nodes in the workspace first, then click the link button.', 'warning');
+				return;
+			}
+			insertText(`[[nodes:${ids.join(',')}]]`, true);
+		}
+
+		function getRecentEmojis() {
+			try {
+				return JSON.parse(localStorage.getItem(RECENT_KEY)) || [];
+			} catch (e) {
+				return [];
+			}
+		}
+
+		function addRecentEmoji(emoji) {
+			const recent = [emoji, ...getRecentEmojis().filter((r) => r[0] !== emoji[0])].slice(0, MAX_RECENT);
+			try {
+				localStorage.setItem(RECENT_KEY, JSON.stringify(recent));
+			} catch (e) {}
+		}
+
+		function buildEmojiPicker(form, btns) {
+			const groups = window.MD_SIDECHAT_EMOJIS || [];
+			const picker = $('<div class="md-sidechat-emoji-picker">').hide().appendTo(form);
+			const search = $('<input type="text" class="md-sidechat-emoji-search" placeholder="Search emoji...">').appendTo(
+				picker
+			);
+			const tabs = $('<div class="md-sidechat-emoji-tabs">').appendTo(picker);
+			const grid = $('<div class="md-sidechat-emoji-grid">').appendTo(picker);
+			let activeGroup = 0;
+
+			function showEmojis(emojis) {
+				grid.empty().scrollTop(0);
+				if (!emojis.length) {
+					grid.append('<div class="md-sidechat-emoji-none">No emoji found</div>');
+				}
+				emojis.forEach((e) => {
+					$('<span class="md-sidechat-emoji">')
+						.text(e[0])
+						.attr('title', e[1])
+						.on('click', () => {
+							insertText(e[0]);
+							addRecentEmoji(e);
+							picker.hide();
+						})
+						.appendTo(grid);
+				});
+			}
+
+			function selectGroup(index) {
+				activeGroup = index;
+				search.val('');
+				tabs
+					.children()
+					.removeClass('selected')
+					.eq(index + 1)
+					.addClass('selected');
+				showEmojis(index === -1 ? getRecentEmojis() : groups[index].emojis);
+			}
+
+			[{ icon: '🕘', name: 'Recently used' }, ...groups].forEach((g, i) => {
+				$('<span class="md-sidechat-emoji-tab">')
+					.text(g.icon)
+					.attr('title', g.name)
+					.on('click', () => selectGroup(i - 1))
+					.appendTo(tabs);
+			});
+
+			search
+				.on('input', () => {
+					const term = search.val().trim().toLowerCase();
+					if (!term) {
+						selectGroup(activeGroup);
+						return;
+					}
+					tabs.children().removeClass('selected');
+					showEmojis(groups.flatMap((g) => g.emojis).filter((e) => e[1].includes(term)));
+				})
+				.on('keydown', (e) => {
+					if (e.key === 'Escape') {
+						picker.hide();
+						input.trigger('focus');
+					}
+					e.stopPropagation();
+				});
+
+			$('<button class="red-ui-button md-sidechat-emoji-btn" title="Emoji">😊</button>')
+				.on('click', (e) => {
+					e.preventDefault();
+					if (picker.is(':visible')) {
+						picker.hide();
+						return;
+					}
+					selectGroup(getRecentEmojis().length ? -1 : 0);
+					picker.show();
+					search.trigger('focus');
+				})
+				.appendTo(btns);
+
+			$(document).on('mousedown', (e) => {
+				if (!$(e.target).closest('.md-sidechat-emoji-picker, .md-sidechat-emoji-btn').length) {
+					picker.hide();
+				}
+			});
+		}
+
+		function renderMessage(m) {
+			const mine = m.user === me;
+			const head = $('<div class="md-sidechat-head">').append(
+				$('<span class="md-sidechat-user">').text(m.user).css('color', colourFor(m.user)),
+				$('<span class="md-sidechat-time">').text(fmtTime(m.ts)).attr('title', new Date(m.ts).toLocaleString())
+			);
+			if (mine) {
+				$('<a href="#" class="md-sidechat-del" title="Delete message"><i class="fa fa-trash-o"></i></a>')
+					.on('click', (e) => {
+						e.preventDefault();
+						api('DELETE', `${API}/${encodeURIComponent(m.id)}`);
+					})
+					.appendTo(head);
+			}
+			const body = $('<div class="md-sidechat-text">').html(formatText(m.text));
+			refreshNodeLinks(body);
+			return $('<div class="md-sidechat-msg">').attr('data-id', m.id).toggleClass('mine', mine).append(head, body);
+		}
+
+		function showEmpty() {
+			if (!list.children('.md-sidechat-msg').length) {
+				list.html('<div class="md-sidechat-empty">No messages yet. Say hello 👋</div>');
+			}
+		}
+
+		function addMessage(m) {
+			if (list.find(`[data-id="${m.id}"]`).length) {
+				return;
+			}
+			const stick = isAtBottom() || m.user === me;
+			list.find('.md-sidechat-empty').remove();
+			list.append(renderMessage(m));
+			if (stick) {
+				scrollToBottom();
+			}
+			if (m.user !== me && mentionsMe(m.text) && !content.is(':visible')) {
+				RED.notify(`<b>${esc(m.user)}</b> mentioned you in Side Chat: ${esc(m.text.slice(0, 80))}`, {
+					type: 'compact',
+					timeout: 3000,
+					buttons: [{ text: 'View Message', click: () => RED.sidebar.show('sidechat') }]
+				});
+			}
+		}
+
+		const ADMIN_COMMANDS = {
+			clear: () => api('DELETE').done(() => RED.notify('Side Chat cleared', 'success'))
+		};
+
+		function runAdminCommand(text) {
+			const match = /^admin:(\w+)$/i.exec(text);
+			if (!match) {
+				return false;
+			}
+			input.val('');
+			const command = ADMIN_COMMANDS[match[1].toLowerCase()];
+			if (command) {
+				command();
+			} else {
+				const available = Object.keys(ADMIN_COMMANDS)
+					.map((k) => `admin:${k}`)
+					.join(', ');
+				RED.notify(`Unknown command: ${esc(text)}<br>Available: ${available}`, 'warning');
+			}
+			return true;
+		}
+
+		function load() {
+			$.getJSON(API)
+				.done((data) => {
+					me = data.me;
+					status.html(
+						data.verified
+							? `Chatting as <b>${esc(me)}</b>`
+							: '<i class="fa fa-warning"></i> No login enabled - everyone shows as <b>anonymous</b>'
+					);
+					list.empty().append((data.messages || []).map((m) => renderMessage(m)));
+					showEmpty();
+					scrollToBottom();
+				})
+				.fail((xhr) => status.text(`Could not load chat: ${errText(xhr)}`));
+		}
+
+		function send() {
+			const text = input.val().trim();
+			if (!text || runAdminCommand(text)) {
+				return;
+			}
+			sendBtn.prop('disabled', true);
+			api('POST', API, { text })
+				.done((m) => {
+					input.val('');
+					addMessage(m);
+				})
+				.always(() => {
+					sendBtn.prop('disabled', false);
+					input.trigger('focus');
+				});
+		}
+
+		function buildUI() {
+			content = $('<div class="md-sidechat">');
+			status = $('<div class="md-sidechat-status">').appendTo(content);
+			list = $('<div class="md-sidechat-list">')
+				.appendTo(content)
+				.on('click', 'a.md-sidechat-node', function (e) {
+					e.preventDefault();
+					goToNodes(String($(this).attr('data-ids')).split(','));
+				});
+
+			const form = $('<div class="md-sidechat-form">').appendTo(content);
+			input = $(
+				'<textarea class="md-sidechat-input" rows="2" placeholder="Message... (Enter to send, Shift+Enter for new line, select a node and link them)"></textarea>'
+			)
+				.appendTo(form)
+				.on('keydown', (e) => {
+					if (e.key === 'Enter' && !e.shiftKey) {
+						e.preventDefault();
+						send();
+					}
+					e.stopPropagation();
+				});
+
+			const btns = $('<div class="md-sidechat-btns">').appendTo(form);
+			$(
+				'<button class="red-ui-button md-sidechat-link" title="Link the selected node(s)"><i class="fa fa-link"></i></button>'
+			)
+				.on('click', (e) => {
+					e.preventDefault();
+					linkSelection();
+				})
+				.appendTo(btns);
+			buildEmojiPicker(form, btns);
+			sendBtn = $(
+				'<button class="red-ui-button md-sidechat-send" title="Send"><i class="fa fa-paper-plane"></i></button>'
+			)
+				.on('click', send)
+				.appendTo(btns);
+
+			const toolbar = $('<div>').append(
+				$('<button class="red-ui-sidebar-header-button" title="Reload chat"><i class="fa fa-refresh"></i></button>').on(
+					'click',
+					load
+				)
+			);
+
+			RED.sidebar.addTab({
+				id: 'sidechat',
+				label: 'chat',
+				name: 'Side Chat',
+				iconClass: 'fa fa-comments',
+				content,
+				toolbar,
+				enableOnEdit: true,
+				onchange: () => setTimeout(scrollToBottom, 0)
+			});
+		}
+
+		function init() {
+			buildUI();
+			load();
+
+			let refreshTimer;
+			['flows:loaded', 'nodes:add', 'nodes:remove', 'nodes:change', 'workspace:change', 'deploy'].forEach((ev) =>
+				RED.events.on(ev, () => {
+					clearTimeout(refreshTimer);
+					refreshTimer = setTimeout(() => refreshNodeLinks(), 200);
+				})
+			);
+
+			RED.comms.subscribe('sidechat/#', (topic, payload) => {
+				if (topic === 'sidechat/message') {
+					addMessage(payload);
+				} else if (topic === 'sidechat/delete') {
+					list.find(`[data-id="${payload.id}"]`).remove();
+				} else if (topic === 'sidechat/clear') {
+					list.empty();
+				}
+				showEmpty();
+			});
+		}
+
+		$(() => {
+			if (RED.sidebar.containsTab?.('sidechat')) {
+				return;
+			}
+			try {
+				init();
+			} catch (err) {
+				console.error('[sidechat] failed to start:', err);
+				RED.notify(`Side Chat failed to start: ${err.message}`, 'error');
+			}
+		});
+	})();
+</script>

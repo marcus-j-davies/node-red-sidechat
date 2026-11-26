@@ -1,0 +1,8 @@
+.DS_Store
+.vscode
+node_modules
+.github
+.eslintrc.js
+.prettierrc.js
+GHImages
+*.tgz

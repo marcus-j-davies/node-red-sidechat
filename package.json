@@ -1,0 +1,46 @@
+{
+	"name": "@marcus-j-davies/node-red-sidechat",
+	"version": "0.1.0",
+	"description": "A sidebar chat for the Node-RED editor so logged-in users can talk, with clickable links that take everyone to a node.",
+	"license": "MIT",
+	"type": "commonjs",
+	"keywords": [
+		"node-red",
+		"node-red-plugin",
+		"chat",
+		"sidebar",
+		"collaboration",
+		"team",
+		"messaging",
+		"editor",
+		"mentions",
+		"emoji"
+	],
+	"devDependencies": {
+		"eslint": "^10.15.0",
+		"prettier": "^3.10.1",
+		"globals": "17.14.0",
+		"@eslint/js": "10.0.1"
+	},
+	"engines": {
+		"node": ">=18"
+	},
+	"node-red": {
+		"version": ">=4.0.0",
+		"plugins": {
+			"sidechat-plugin": "plugins/sidechat.js"
+		}
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/marcus-j-davies/node-red-sidechat.git"
+	},
+	"author": {
+		"name": "Marcus Davies",
+		"email": "marcus.davies83@icloud.com"
+	},
+	"bugs": {
+		"url": "https://github.com/marcus-j-davies/node-red-sidechat/issues"
+	},
+	"homepage": "https://github.com/marcus-j-davies/node-red-sidechat#readme"
+}
