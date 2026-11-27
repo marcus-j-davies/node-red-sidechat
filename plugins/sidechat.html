@@ -9,9 +9,13 @@
 		const NODE_TOKEN = /\[\[nodes?:([A-Za-z0-9._,-]+)\]\]/g;
 		const RECENT_KEY = 'md-sidechat-recent-emojis';
 		const MAX_RECENT = 24;
+		const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
+		const MAX_IMAGE_SIZE = 1600;
 
 		let me;
-		let list, input, sendBtn, content, status;
+		let list, input, sendBtn, content, status, attachPreview;
+		let pendingImage = null;
+		const imageCache = new Map();
 
 		const esc = (s) =>
 			$('<div>')
@@ -235,6 +239,94 @@
 			});
 		}
 
+		function readAsDataUrl(blob) {
+			return new Promise((resolve, reject) => {
+				const reader = new FileReader();
+				reader.onload = () => resolve(reader.result);
+				reader.onerror = () => reject(new Error('Could not read that image'));
+				reader.readAsDataURL(blob);
+			});
+		}
+
+		async function prepareImage(file) {
+			if (file.type === 'image/gif') {
+				return readAsDataUrl(file);
+			}
+			const url = URL.createObjectURL(file);
+			try {
+				const img = await new Promise((resolve, reject) => {
+					const i = new Image();
+					i.onload = () => resolve(i);
+					i.onerror = () => reject(new Error('Could not read that image'));
+					i.src = url;
+				});
+				const scale = Math.min(1, MAX_IMAGE_SIZE / Math.max(img.width, img.height));
+				const canvas = document.createElement('canvas');
+				canvas.width = Math.round(img.width * scale);
+				canvas.height = Math.round(img.height * scale);
+				canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+				return canvas.toDataURL('image/webp', 0.85);
+			} finally {
+				URL.revokeObjectURL(url);
+			}
+		}
+
+		function clearAttachment() {
+			pendingImage = null;
+			attachPreview.empty().hide();
+		}
+
+		async function attachImage(file) {
+			if (!file || !file.type.startsWith('image/')) {
+				return;
+			}
+			try {
+				const data = await prepareImage(file);
+				if (data.length * 0.75 > MAX_IMAGE_BYTES) {
+					RED.notify('Side Chat: that image is too large (max 2 MB)', 'warning');
+					return;
+				}
+				pendingImage = data;
+				const remove = $(
+					'<a href="#" class="md-sidechat-attach-remove" title="Remove image"><i class="fa fa-times"></i></a>'
+				).on('click', (e) => {
+					e.preventDefault();
+					clearAttachment();
+				});
+				attachPreview
+					.empty()
+					.append($('<span class="md-sidechat-attach-thumb">').append($('<img>').attr('src', data), remove))
+					.show();
+				input.trigger('focus');
+			} catch (err) {
+				RED.notify(`Side Chat: ${err.message}`, 'error');
+			}
+		}
+
+		function showLightbox(src) {
+			const overlay = $('<div class="md-sidechat-lightbox">')
+				.append($('<img>').attr('src', src))
+				.on('click', () => overlay.remove())
+				.appendTo('body');
+		}
+
+		function loadImage(img, id) {
+			const show = (data) => {
+				const stick = isAtBottom();
+				img.on('load', () => stick && scrollToBottom()).attr('src', data);
+			};
+			if (imageCache.has(id)) {
+				show(imageCache.get(id));
+				return;
+			}
+			$.getJSON(`sidechat/images/${encodeURIComponent(id)}`)
+				.done((res) => {
+					imageCache.set(id, res.data);
+					show(res.data);
+				})
+				.fail(() => img.replaceWith('<div class="md-sidechat-image-missing">Image no longer available</div>'));
+		}
+
 		function renderMessage(m) {
 			const mine = m.user === me;
 			const head = $('<div class="md-sidechat-head">').append(
@@ -250,6 +342,11 @@
 					.appendTo(head);
 			}
 			const body = $('<div class="md-sidechat-text">').html(formatText(m.text));
+			if (m.image) {
+				const img = $('<img class="md-sidechat-image" alt="image">').on('click', () => showLightbox(img.attr('src')));
+				body.prepend(img);
+				loadImage(img, m.image.id);
+			}
 			refreshNodeLinks(body);
 			return $('<div class="md-sidechat-msg">').attr('data-id', m.id).toggleClass('mine', mine).append(head, body);
 		}
@@ -319,13 +416,14 @@
 
 		function send() {
 			const text = input.val().trim();
-			if (!text || runAdminCommand(text)) {
+			if ((!text && !pendingImage) || runAdminCommand(text)) {
 				return;
 			}
 			sendBtn.prop('disabled', true);
-			api('POST', API, { text })
+			api('POST', API, { text, image: pendingImage || undefined })
 				.done((m) => {
 					input.val('');
+					clearAttachment();
 					addMessage(m);
 				})
 				.always(() => {
@@ -345,8 +443,9 @@
 				});
 
 			const form = $('<div class="md-sidechat-form">').appendTo(content);
+			attachPreview = $('<div class="md-sidechat-attach">').hide().appendTo(form);
 			input = $(
-				'<textarea class="md-sidechat-input" rows="2" placeholder="Message... (Enter to send, Shift+Enter for new line, select a node and link them)"></textarea>'
+				'<textarea class="md-sidechat-input" rows="2" placeholder="Message... (Enter to send, Shift+Enter for new line, paste or drop images here)"></textarea>'
 			)
 				.appendTo(form)
 				.on('keydown', (e) => {
@@ -355,15 +454,50 @@
 						send();
 					}
 					e.stopPropagation();
+				})
+				.on('paste', (e) => {
+					const item = [...(e.originalEvent.clipboardData?.items || [])].find((i) => i.type.startsWith('image/'));
+					if (item) {
+						e.preventDefault();
+						attachImage(item.getAsFile());
+					}
+				});
+
+			content
+				.on('dragover', (e) => {
+					e.preventDefault();
+					e.stopPropagation();
+				})
+				.on('drop', (e) => {
+					const file = [...(e.originalEvent.dataTransfer?.files || [])].find((f) => f.type.startsWith('image/'));
+					if (file) {
+						e.preventDefault();
+						e.stopPropagation();
+						attachImage(file);
+					}
 				});
 
 			const btns = $('<div class="md-sidechat-btns">').appendTo(form);
 			$(
-				'<button class="red-ui-button md-sidechat-link" title="Link the selected node(s)"><i class="fa fa-link"></i></button>'
+				'<button class="red-ui-button md-sidechat-link" title="Link the selected node(s)"><i class="fa fa-bars"></i></button>'
 			)
 				.on('click', (e) => {
 					e.preventDefault();
 					linkSelection();
+				})
+				.appendTo(btns);
+			const fileInput = $('<input type="file" accept="image/*" hidden>')
+				.on('change', () => {
+					attachImage(fileInput[0].files[0]);
+					fileInput.val('');
+				})
+				.appendTo(form);
+			$(
+				'<button class="red-ui-button md-sidechat-attach-btn" title="Attach an image"><i class="fa fa-picture-o"></i></button>'
+			)
+				.on('click', (e) => {
+					e.preventDefault();
+					fileInput.trigger('click');
 				})
 				.appendTo(btns);
 			buildEmojiPicker(form, btns);

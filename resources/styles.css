@@ -104,6 +104,7 @@
 .md-sidechat-form {
 	position: relative; /* anchor for the emoji picker */
 	display: flex;
+	flex-wrap: wrap; /* image preview sits on its own row above the input */
 	gap: 6px;
 	padding: 8px;
 	border-top: 1px solid var(--red-ui-secondary-border-color, #ddd);
@@ -117,9 +118,10 @@
 	box-sizing: border-box;
 }
 .md-sidechat-btns {
-	display: flex;
-	flex-direction: column;
+	display: grid;
+	grid-template-columns: repeat(2, auto); /* 2 x 2: link, attach / emoji, send */
 	gap: 4px;
+	align-content: start;
 }
 .md-sidechat-node {
 	display: inline-block;
@@ -222,4 +224,64 @@
 	text-align: center;
 	padding: 20px;
 	color: var(--red-ui-tertiary-text-color, #999);
+}
+/* ---- images ---- */
+.md-sidechat-image {
+	display: block;
+	max-width: 100%;
+	max-height: 200px;
+	margin: 2px 0 4px;
+	border-radius: 4px;
+	cursor: zoom-in;
+}
+.md-sidechat-image-missing {
+	font-style: italic;
+	font-size: 12px;
+	opacity: 0.7;
+}
+.md-sidechat-attach {
+	flex-basis: 100%;
+}
+.md-sidechat-attach-thumb {
+	position: relative;
+	display: inline-block;
+}
+.md-sidechat-attach-thumb img {
+	display: block;
+	max-height: 80px;
+	max-width: 100%;
+	border-radius: 4px;
+	border: 1px solid var(--red-ui-secondary-border-color, #ccc);
+}
+.md-sidechat-attach-remove {
+	position: absolute;
+	top: -6px;
+	right: -6px;
+	width: 18px;
+	height: 18px;
+	line-height: 18px;
+	text-align: center;
+	border-radius: 50%;
+	background: #555;
+	color: #fff !important;
+	font-size: 11px;
+}
+.md-sidechat-attach-remove:hover {
+	background: #d9534f;
+}
+.md-sidechat-lightbox {
+	position: fixed;
+	inset: 0;
+	z-index: 2000;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background: rgba(0, 0, 0, 0.8);
+	cursor: zoom-out;
+}
+.md-sidechat-lightbox img {
+	max-width: 90vw;
+	max-height: 90vh;
+	border-radius: 4px;
+	box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
 }

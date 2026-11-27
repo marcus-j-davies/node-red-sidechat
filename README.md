@@ -12,6 +12,7 @@ A chat for the Node-RED editor, in the right-hand sidebar. Everyone logged in to
 - **Message history.** History is saved on the server, so it survives restarts.
 - **Admin tools.** Admins can clear the whole chat with a single command.
 - **Clear layout.** Your messages are on the right in blue and everyone else's are on the left in grey, like a phone's messaging app.
+- **Image support.** Your messages can include an image that gets attached and viewed by the recipients.
 
 ![Image](./GHImages/4.png)
 

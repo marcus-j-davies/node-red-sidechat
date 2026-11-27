@@ -1,6 +1,6 @@
 {
 	"name": "@marcus-j-davies/node-red-sidechat",
-	"version": "0.1.0",
+	"version": "1.0.0",
 	"description": "A sidebar chat for the Node-RED editor so logged-in users can talk, with clickable links that take everyone to a node.",
 	"license": "MIT",
 	"type": "commonjs",
